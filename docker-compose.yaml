@@ -1,0 +1,424 @@
+x-common-env: &common-env
+  LICENSE_TOKEN: ${LICENSE_TOKEN}
+  LICENSE_PUBLIC_KEY: ${LICENSE_PUBLIC_KEY}
+  ROOT_USER_TOKEN: ${ROOT_USER_TOKEN}
+  LLAMA_API_KEY: ${LLAMA_API_KEY}
+  GEMINI_API_KEY: ${GEMINI_API_KEY}
+  MONGODB_URI: "mongodb://admin:admin123456@mongodb:27017/?authSource=admin&directConnection=true"
+  S3_BUCKET_NAME: "dpod-aws-s3"
+  EXTRACTION_SERVICE_URL: http://extraction.localhost:8080/entityextractionagent
+  MINIO_ENDPOINT: http://minio.localhost:8080
+  MINIO_ACCESS_KEY: "admin"
+  MINIO_SECRET_KEY: "admin123"
+  APPFLYTE_AUTHORIZATION_URL: "ameya-authorization-service:50052"
+  LOCAL_TESTING_ENABLED: "true"
+  REDIS_HOST: ameya-redis
+  REDIS_PORT: "6379"
+
+x-ameya-env: &ameya-env
+  EXTERNAL_APPFLYTE_AUTHENTICATION_URL: "https://auth-dev.appflyte.net"
+  APPFLYTE_AUTHENTICATION_URL: http://ameya-authentication-service:5000
+  APPFLYTE_BACKEND_URL: http://ameya-backend-service:8000
+  APPFLYTE_SCHEMA_ID: "ameya_appflyte"
+  S3_ENDPOINT_URL: http://minio.localhost:8080
+  DYNAMODB_ACCESS_KEY: "admin"
+  DYNAMODB_SECRET_KEY: "admin123"
+  DYNAMODB_ENDPOINT_URL: http://dynamodb:8000
+  MONGO_DB_DATABASE: extraction-analytics
+  CELERY_BROKER_URL: amqp://ameya-rabbitmq:5672//
+  CELERY_RESULT_BACKEND: redis://ameya-redis:6379/0
+  RABBIT_HOST: ameya-rabbitmq
+  RABBIT_PORT: "5672"
+
+x-web-env: &web-env
+  APPFLYTE_AUTHENTICATION_URL: http://auth.localhost:8080
+  APPFLYTE_BACKEND_URL: http://api.localhost:8080
+  AMEYA_WEB_URL: http://localhost:8080
+  EXTRACTION_TRAINING_PLUGIN_URL: http://plugin.localhost:8080/training
+  EXTRACTION_SCHEMA_BUILDER_PLUGIN_URL: http://plugin.localhost:8080/schema-builder
+
+x-extraction-env: &extraction-env
+  RABBIT_HOST: extraction-rabbitmq
+  CELERY_BROKER_URL: pyamqp://guest@extraction-rabbitmq//
+  LLM_MODEL: gemini-2.5-flash
+  LLM_PROVIDER: google
+
+services:
+  # DPOD auth-server (authentication)
+  ameya-authentication-service:
+    image: ghcr.io/dpod-labs-private-limited/ameya-auth:v1.1.0
+    container_name: ameya-authentication-service
+    expose:
+      - 5000
+    environment:
+      <<: [*ameya-env, *common-env]
+    restart: always
+    depends_on:
+      ameya-redis:
+        condition: service_healthy
+      ameya-rabbitmq:
+        condition: service_healthy
+      dynamodb-init:
+        condition: service_completed_successfully
+    healthcheck:
+      # TCP liveness: app is up and listening on 5000. (Image has python, no shell.)
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',5000),3).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    networks:
+      - ameya_community_network
+
+  # DPOD auth-server (authorization / gRPC)
+  ameya-authorization-service:
+    image: ghcr.io/dpod-labs-private-limited/ameya-authz:v1.1.0
+    container_name: ameya-authorization-service
+    environment:
+      <<: [*ameya-env, *common-env]
+    expose:
+      - 50052
+    depends_on:
+      dynamodb-init:
+        condition: service_completed_successfully
+      ameya-authentication-service:
+        condition: service_healthy
+    restart: always
+    networks:
+      - ameya_community_network 
+
+  # DPOD backend API
+  ameya-backend-service:
+    image: ghcr.io/dpod-labs-private-limited/ameya-backend:v1.1.0
+    container_name: ameya-backend-service
+    # Resolve the browser-facing proxy hosts from inside the container too
+    # (libc won't query Docker DNS for *.localhost). Routes via the host to Caddy.
+    extra_hosts:
+      - "minio.localhost:host-gateway"
+      - "extraction.localhost:host-gateway"
+    expose:
+      - 8000
+    environment:
+      <<: [*ameya-env, *common-env]
+    depends_on:
+      dynamodb-init:
+        condition: service_completed_successfully
+      ameya-authentication-service:
+        condition: service_healthy
+    healthcheck:
+      # TCP liveness: backend up and listening on 8000. (Image has python, no shell.)
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',8000),3).close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 300s
+    networks:
+      - ameya_community_network
+  # Celery worker
+  ameya-celery-worker:
+    image: ghcr.io/dpod-labs-private-limited/ameya-celery:v1.1.0  
+    container_name: ameya-celery-worker
+    extra_hosts:
+      - "minio.localhost:host-gateway"
+      - "extraction.localhost:host-gateway"
+    environment:
+      <<: [*ameya-env, *common-env]
+    depends_on:
+      ameya-backend-service:
+        condition: service_healthy
+    networks:
+      - ameya_community_network 
+    restart: always
+  # Redis
+  ameya-redis:
+    image: "redis:alpine"
+    container_name: ameya-redis
+    networks:
+      - ameya_community_network 
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+  # RabbitMQ
+  ameya-rabbitmq:
+    image: "rabbitmq:3.12.1-management"
+    container_name: ameya-rabbitmq
+    networks:
+      - ameya_community_network 
+    expose:
+      - 5672
+      - 15672
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+
+    # DynamoDB Admin UI
+  dynamodb-admin:
+    image: aaronshaf/dynamodb-admin
+    expose:
+      - 8001
+    environment:
+      DYNAMO_ENDPOINT: http://dynamodb:8000
+    depends_on:
+      dynamodb:
+        condition: service_healthy
+    networks:
+      - ameya_community_network
+    restart: always
+  # DynamoDB
+  # Bootstrap — runs once: creates the DynamoDB table and the MinIO bucket if they don't exist
+  dynamodb-init:
+    image: ghcr.io/dpod-labs-private-limited/community-init:v1.1.0
+    container_name: dynamodb-init
+    depends_on:
+      dynamodb:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      - DYNAMODB_ENDPOINT_URL=http://dynamodb:8000
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_BUCKET_NAME=dpod-aws-s3
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=admin123
+      - AWS_DEFAULT_REGION=us-east-1
+      - LICENSE_TOKEN=${LICENSE_TOKEN}
+    networks:
+      - ameya_community_network 
+    restart: "no"
+  # DynamoDB (local) — does not authenticate; with -sharedDb it ignores AWS creds
+  dynamodb:
+    image: amazon/dynamodb-local:latest
+    container_name: dynamodb
+    command: ["-jar", "DynamoDBLocal.jar", "-sharedDb", "-dbPath", "/home/dynamodblocal/data"]
+    user: root
+    expose:
+      - 8000
+    volumes:
+      - dynamodb-data:/home/dynamodblocal/data
+    healthcheck:
+      # HTTP liveness: DynamoDB Local answers on 8000 (GET / -> 400 = up). Image has curl.
+      test: ["CMD", "curl", "-s", "-o", "/dev/null", "http://localhost:8000"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    networks:
+      - ameya_community_network
+    restart: always
+# # MongoDB Database
+  mongodb:
+    image: mongodb/mongodb-atlas-local:8.0
+    container_name: mongodb
+    hostname: mongodb
+    environment:
+      MONGODB_INITDB_ROOT_USERNAME: admin
+      MONGODB_INITDB_ROOT_PASSWORD: admin123456
+      MONGODB_INITDB_DATABASE: admin
+    expose:
+      - 27017
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+    networks:
+      - ameya_community_network 
+    restart: always
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Mongo Express - MongoDB UI
+  mongo-express:
+    image: mongo-express:latest
+    container_name: mongo_express_ui
+    environment:
+      ME_CONFIG_MONGODB_ADMINUSERNAME: admin
+      ME_CONFIG_MONGODB_ADMINPASSWORD: admin12345
+      ME_CONFIG_MONGODB_URL: mongodb://admin:admin123456@mongodb:27017/
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+    expose:
+      - 8081
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - ameya_community_network 
+    restart: always
+  # Minio
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=admin123
+    expose:
+      - 9000
+      - 9001
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - ameya_community_network
+    restart: always
+
+
+  # Extraction-plugin
+  training_plugin:
+    image: ghcr.io/dpod-labs-private-limited/extraction-plugin:v1.1.0
+    container_name: training_plugin
+    extra_hosts:
+      - "minio.localhost:host-gateway"
+      - "extraction.localhost:host-gateway"
+    expose:
+      - 80
+    networks:
+      - ameya_community_network 
+    restart: always
+
+  # Extraction Service API
+  extraction-service:
+    image: ghcr.io/dpod-labs-private-limited/extraction-service:v1.1.0
+    container_name: extraction-service
+    extra_hosts:
+      - "minio.localhost:host-gateway"
+      - "extraction.localhost:host-gateway"
+    depends_on:
+      ameya-backend-service:
+        condition: service_healthy
+      extraction-rabbitmq:
+        condition: service_healthy
+    environment:
+      <<: [*extraction-env, *common-env]
+    expose:
+      - 8000
+    volumes:
+      - uploads_data:/app/shared/uploads
+      - parsed_docs:/app/shared/parsed
+      - extraction_output:/app/shared/extracted
+      - extracted_layouts:/app/shared/extracted_layouts
+    restart: always
+    networks:
+      - ameya_community_network 
+  # extraction RabbitMQ
+  extraction-rabbitmq:
+    image: "rabbitmq:3.12.1-management"
+    container_name: extraction-rabbitmq
+    networks:
+      - ameya_community_network 
+    expose:
+      - 5672
+      - 15672
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+  # Extraction Celery Worker
+  extraction-celery-worker:
+    image: ghcr.io/dpod-labs-private-limited/extraction-service:v1.1.0
+    container_name: extraction-celery
+    extra_hosts:
+      - "minio.localhost:host-gateway"
+      - "extraction.localhost:host-gateway"
+    environment:
+      <<: [*extraction-env, *common-env]
+      APP_MODE: worker
+    volumes:
+      - ./logs:/app/logs
+      - uploads_data:/app/shared/uploads
+      - parsed_docs:/app/shared/parsed
+      - extraction_output:/app/shared/extracted
+      - extracted_layouts:/app/shared/extracted_layouts
+    depends_on:
+      ameya-backend-service:
+        condition: service_healthy
+      extraction-rabbitmq:
+        condition: service_healthy
+    networks:
+      - ameya_community_network 
+    restart: always
+# Caddy reverse proxy — single origin (http://localhost) for frontend + APIs
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      - ameya_community_network
+    restart: always
+
+  # DPOD ameya-web (frontend)
+  ameya-web-service:
+    image: ghcr.io/dpod-labs-private-limited/ameya-frontend:v1.1.0
+    container_name: ameya-web-service
+    expose:
+      - 3000
+    environment:
+      <<: [*web-env, *common-env]
+      # Browser-facing URLs — one subdomain per service via the Caddy proxy.
+      # (The browser must resolve *.localhost; Safari needs /etc/hosts entries.)
+    networks:
+      - ameya_community_network
+    extra_hosts:
+      - "minio.localhost:host-gateway"
+      - "extraction.localhost:host-gateway"
+    restart: always
+    healthcheck:
+      # TCP liveness: Next.js frontend up and listening on 3000. (Node image, no curl.)
+      test: ["CMD", "node", "-e", "require('net').connect(3000,'127.0.0.1').on('connect',()=>process.exit(0)).on('error',()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    depends_on:
+      ameya-backend-service:
+        condition: service_healthy
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+
+volumes:
+  redis-data:
+  rabbitmq-data:
+  dynamodb-data:
+  minio-data:
+  mongodb_data:
+  mongodb_config:
+  uploads_data:
+  parsed_docs:
+  extraction_output:
+  extracted_layouts:
+  caddy-data:
+  caddy-config:
+
+# ── Networks ──────────────────────────────────────────────────────────────────
+
+networks:
+  ameya_community_network:
+    external: true

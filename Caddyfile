@@ -1,0 +1,83 @@
+# Subdomain reverse proxy for the DPOD community stack.
+# One hostname per service, all on :8080 — no path prefixes, no prefix
+# stripping, no /_next collisions. A wrong host fails clearly instead of
+# silently returning the SPA.
+#
+# The SPA (localhost:8080) calls the API subdomains cross-origin, so those
+# subdomains carry CORS headers — added HERE, uniformly, overriding whatever
+# each upstream may or may not send (auth sends none; backend/extraction do).
+#
+# The browser must resolve *.localhost -> 127.0.0.1:
+#   • Chrome / Firefox do this automatically (per RFC 6761).
+#   • Safari does NOT — add to /etc/hosts:
+#       127.0.0.1  auth.localhost api.localhost extraction.localhost plugin.localhost
+
+{
+	auto_https off
+}
+
+# Reusable CORS for API subdomains: reflect the caller's Origin (required when
+# credentials are allowed — "*" is illegal then), answer preflight with 204, and
+# set headers deferred so they OVERRIDE any the upstream already sent.
+(cors) {
+	@cors_preflight method OPTIONS
+	header {
+		Access-Control-Allow-Origin "{http.request.header.origin}"
+		Access-Control-Allow-Credentials "true"
+		Access-Control-Allow-Methods "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+		Access-Control-Allow-Headers "{http.request.header.access-control-request-headers}"
+		Access-Control-Max-Age "3600"
+		Vary "Origin"
+		defer
+	}
+	respond @cors_preflight 204
+}
+
+# Frontend SPA — same-origin to itself, no CORS needed.
+http://localhost:8080 {
+	reverse_proxy ameya-web-service:3000
+}
+
+# Auth service
+http://auth.localhost:8080 {
+	import cors
+	reverse_proxy ameya-authentication-service:5000
+}
+
+# Backend API
+http://api.localhost:8080 {
+	import cors
+	reverse_proxy ameya-backend-service:8000
+}
+
+# Extraction service (its API mounts under /entityextractionagent — path is
+# preserved, so callers use http://extraction.localhost:8080/entityextractionagent/...)
+http://extraction.localhost:8080 {
+	import cors
+	reverse_proxy extraction-service:8000
+}
+
+# Extraction training + schema-builder plugin (Next.js). Both pages live in the
+# same app and share /_next assets under this host — no collision with the SPA.
+http://plugin.localhost:8080 {
+	reverse_proxy training_plugin:80
+}
+
+# MinIO S3 API (:9000) — for browser uploads/downloads via presigned URLs.
+# IMPORTANT: S3 SigV4 signs the Host header, so the signature only matches if
+# the backend presigns with this exact host. Set, for the backend:
+#     S3_ENDPOINT_URL=http://minio.localhost:8080
+# Caddy forwards the client's Host unchanged by default (needed for the sig).
+# import cors handles the browser preflight for the presigned PUT/GET.
+http://minio.localhost:8080 {
+	import cors
+	reverse_proxy minio:9000
+}
+
+http://dynamoadmin.localhost:8080 {
+	reverse_proxy dynamoadmin:8001
+}
+
+http://mongoui.localhost:8080 {
+	reverse_proxy mongo-express:8081
+}
