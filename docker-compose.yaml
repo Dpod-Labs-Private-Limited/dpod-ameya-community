@@ -2,11 +2,15 @@ x-common-env: &common-env
   LICENSE_TOKEN: ${LICENSE_TOKEN}
   LICENSE_PUBLIC_KEY: ${LICENSE_PUBLIC_KEY}
   ROOT_USER_TOKEN: ${ROOT_USER_TOKEN}
-  LLAMA_API_KEY: ${LLAMA_API_KEY}
   GEMINI_API_KEY: ${GEMINI_API_KEY}
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
   MONGODB_URI: "mongodb://admin:admin123456@mongodb:27017/?authSource=admin&directConnection=true"
   S3_BUCKET_NAME: "dpod-aws-s3"
-  EXTRACTION_SERVICE_URL: http://extraction.localhost:8080/entityextractionagent
+  EXTRACTION_SERVICE_URL: http://api.localhost:8080/entityextractionagent
+  ANALYTICS_SERVICE_URL:  http://api.localhost:8080/ameya/analytics/v1
+  ANALYTICS_CHATBOT_PLUGIN_URL: "https://dev-test-ameya-analytics-chatbot.ameya.ai"
+  APPFLYTE_ANALYTICS_CHATBOT_PLUGIN_URL: "https://dev-test-appflyte-analytics-chatbot.ameya.ai"
+  MONGO_DB_DATABASE: extraction-analytics
   MINIO_ENDPOINT: http://minio.localhost:8080
   MINIO_ACCESS_KEY: "admin"
   MINIO_SECRET_KEY: "admin123"
@@ -14,6 +18,7 @@ x-common-env: &common-env
   LOCAL_TESTING_ENABLED: "true"
   REDIS_HOST: ameya-redis
   REDIS_PORT: "6379"
+  DEPLOYMENT_MODE: "community"
 
 x-ameya-env: &ameya-env
   EXTERNAL_APPFLYTE_AUTHENTICATION_URL: "https://auth-dev.appflyte.net"
@@ -32,7 +37,7 @@ x-ameya-env: &ameya-env
 
 x-web-env: &web-env
   APPFLYTE_AUTHENTICATION_URL: http://auth.localhost:8080
-  APPFLYTE_BACKEND_URL: http://api.localhost:8080
+  APPFLYTE_BACKEND_URL: http://backend.localhost:8080
   AMEYA_WEB_URL: http://localhost:8080
   EXTRACTION_TRAINING_PLUGIN_URL: http://plugin.localhost:8080/training
   EXTRACTION_SCHEMA_BUILDER_PLUGIN_URL: http://plugin.localhost:8080/schema-builder
@@ -42,6 +47,29 @@ x-extraction-env: &extraction-env
   CELERY_BROKER_URL: pyamqp://guest@extraction-rabbitmq//
   LLM_MODEL: gemini-2.5-flash
   LLM_PROVIDER: google
+
+x-analytics-env: &analytics-env
+  MONGODB_USER_DB: user-master
+  MONGODB_MONGO_INDEX_DB: index-master
+  MONGODB_PDF_INDEX_DB: ameya-analytics-pdf
+  PDF_PARSER_HOST_URL: "http://analytics-pdf-parser:8080"
+  RABBITMQ_HOST: "analytics-rabbitmq"
+  RABBITMQ_PORT: 5672
+  CELERY_BROKER_URL: redis://ameya-redis:6379/0
+  CELERY_RESULT_BACKEND: redis://ameya-redis:6379/1
+  ENGINE: "ameya-analytics"
+
+x-consumer-env: &consumer-env
+  MONGO_USER_DB: user-master
+  MONGO_INDEX_DB: index-master
+  MONGO_SESSION_DB: session-master
+  OPENAI_EMBEDDING_MODEL: text-embedding-3-small
+  RABBITMQ_HOST: "analytics-rabbitmq"
+  MONGO_MCP_SERVER_URL: "http://analytics-mongo-server:9010"
+  ENABLE_CONTEXT_COMPRESSION: "true"
+  SYSTEM_IDENTITY_PATH: src/config/system_identity.json
+  SKILLS_DIR: src/config/20260330_163909/skills
+
 
 services:
   # DPOD auth-server (authentication)
@@ -360,6 +388,115 @@ services:
     networks:
       - ameya_community_network 
     restart: always
+  # analytics service API
+  analytics-api:
+    image: ghcr.io/dpod-labs-private-limited/analytics-service-api:v1.1.0
+    container_name: analytics-api
+    environment:
+      <<: [*analytics-env, *common-env]
+    expose:
+      - 8087
+    extra_hosts:
+      - "minio.localhost:host-gateway"
+      - "extraction.localhost:host-gateway"
+    restart: always
+    healthcheck:
+      # HTTP liveness matching the k8s probe: GET /ameya/analytics/v1/docs on 8087.
+      # (Image has python, no curl — use urllib.)
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8087/ameya/analytics/v1/docs',timeout=25).status==200 else 1)"]
+      interval: 60s
+      timeout: 30s
+      retries: 5
+      start_period: 500s
+    depends_on:
+      ameya-backend-service:
+        condition: service_healthy
+      analytics-rabbitmq:
+        condition: service_healthy
+    networks:
+      - ameya_community_network
+  # analytics RabbitMQ
+  analytics-rabbitmq:
+    image: "rabbitmq:3.12.1-management"
+    container_name: analytics-rabbitmq
+    networks:
+      - ameya_community_network
+    expose:
+      - 5672
+      - 15672
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+  # Analytics Celery Beat
+  analytics-celery-beat:
+    image: ghcr.io/dpod-labs-private-limited/analytics-service-celery:v1.1.0
+    container_name: analytics-celery-beat
+    environment:
+      APP_MODE: beat
+      <<: [*analytics-env, *common-env]
+    depends_on:
+      analytics-rabbitmq:
+        condition: service_healthy
+      analytics-api:
+        condition: service_healthy
+    networks:
+      - ameya_community_network
+  # analytics Celery Worker
+  analytics-celery-worker:
+    image: ghcr.io/dpod-labs-private-limited/analytics-service-celery:v1.1.0
+    container_name: analytics-celery
+    environment:
+      APP_MODE: worker
+      <<: [*analytics-env, *common-env]
+    depends_on:
+      analytics-api:
+        condition: service_healthy
+    networks:
+      - ameya_community_network  
+    restart: always
+
+  #Analytics Mongo server
+  analytics-mongo-server:
+    image: ghcr.io/dpod-labs-private-limited/mongo-server:v1.1.0
+    container_name: analytics-mongo-server
+    expose:
+      - 9010
+    environment:
+      <<: [*consumer-env, *common-env]
+    healthcheck:
+      # TCP liveness: app is up and listening on 9010. (Image has python, no shell.)
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',9010),3).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    depends_on:
+      analytics-api:
+        condition: service_healthy
+    networks:
+      - ameya_community_network  
+    restart: always
+  #Analytics Mongo consumer
+  analytics-mongo-consumer:
+    image: ghcr.io/dpod-labs-private-limited/mongo-consumer:v1.1.0
+    container_name: analytics-mongo-consumer
+    environment:
+      <<: [*consumer-env, *common-env]
+    depends_on:
+      analytics-api:
+        condition: service_healthy
+      analytics-mongo-server:
+        condition: service_healthy
+    networks:
+      - ameya_community_network  
+    restart: always
+
 # Caddy reverse proxy — single origin (http://localhost) for frontend + APIs
   caddy:
     image: caddy:2-alpine
@@ -399,6 +536,8 @@ services:
       start_period: 40s
     depends_on:
       ameya-backend-service:
+        condition: service_healthy
+      analytics-api:
         condition: service_healthy
 
 # ── Volumes ───────────────────────────────────────────────────────────────────

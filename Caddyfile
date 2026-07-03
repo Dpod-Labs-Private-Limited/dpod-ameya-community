@@ -45,16 +45,31 @@ http://auth.localhost:8080 {
 }
 
 # Backend API
-http://api.localhost:8080 {
+http://backend.localhost:8080 {
 	import cors
 	reverse_proxy ameya-backend-service:8000
 }
 
-# Extraction service (its API mounts under /entityextractionagent — path is
-# preserved, so callers use http://extraction.localhost:8080/entityextractionagent/...)
-http://extraction.localhost:8080 {
+# Unified API host — path-routed to the backing services. Paths are preserved
+# (no stripping), so each upstream sees the same prefix it mounts under:
+#   • /entityextractionagent/*  -> extraction-service (mounts at /entityextractionagent)
+#   • /ameya/analytics/v1/*     -> analytics-api      (mounts at /ameya/analytics/v1)
+# The bare-prefix forms (no trailing slash) are matched too so a call to exactly
+# /entityextractionagent or /ameya/analytics/v1 still routes correctly.
+http://api.localhost:8080 {
 	import cors
-	reverse_proxy extraction-service:8000
+
+	# handle takes a single matcher token, so use named matchers to cover both
+	# the bare prefix and its subpaths.
+	@extraction path /entityextractionagent /entityextractionagent/*
+	handle @extraction {
+		reverse_proxy extraction-service:8000
+	}
+
+	@analytics path /ameya/analytics/v1 /ameya/analytics/v1/*
+	handle @analytics {
+		reverse_proxy analytics-api:8087
+	}
 }
 
 # Extraction training + schema-builder plugin (Next.js). Both pages live in the
@@ -75,7 +90,7 @@ http://minio.localhost:8080 {
 }
 
 http://dynamoadmin.localhost:8080 {
-	reverse_proxy dynamoadmin:8001
+	reverse_proxy dynamodb-admin:8001
 }
 
 http://mongoui.localhost:8080 {

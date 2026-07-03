@@ -2,36 +2,58 @@
 
 Docker Compose deployment for the DPOD (Ameya) community stack. A single
 `docker compose up` brings up the frontend, auth/authorization, backend +
-Celery, the document-extraction service, and all supporting infrastructure
-(DynamoDB, MongoDB, MinIO, Redis, RabbitMQ) behind a Caddy reverse proxy on
-`http://localhost:8080`.
+Celery, the document-extraction subsystem, the analytics subsystem, and all
+supporting infrastructure (DynamoDB, MongoDB, MinIO, Redis, RabbitMQ) behind a
+Caddy reverse proxy on `http://localhost:8080`.
 
 ## Architecture
 
-Everything is fronted by **Caddy** on port `8080`, which routes one subdomain
-per service (no path prefixes):
+Everything is fronted by **Caddy** on port `8080`. Most services get their own
+hostname; the extraction and analytics APIs share the `api.localhost` host and
+are separated by **path**:
 
-| URL                                              | Service                       |
-| ------------------------------------------------ | ----------------------------- |
-| `http://localhost:8080`                          | Frontend SPA (ameya-web)      |
-| `http://auth.localhost:8080`                     | Authentication service        |
-| `http://api.localhost:8080`                      | Backend API                   |
-| `http://extraction.localhost:8080`              | Extraction service            |
-| `http://plugin.localhost:8080`                   | Training / schema-builder UI  |
-| `http://minio.localhost:8080`                    | MinIO S3 API                  |
-| `http://mongoui.localhost:8080`                  | Mongo Express (DB UI)         |
-| `http://dynamoadmin.localhost:8080`             | DynamoDB Admin UI             |
+| URL                                                    | Routes to                     |
+| ------------------------------------------------------ | ----------------------------- |
+| `http://localhost:8080`                                | Frontend SPA (ameya-web)      |
+| `http://auth.localhost:8080`                           | Authentication service        |
+| `http://backend.localhost:8080`                        | Backend API                   |
+| `http://api.localhost:8080/entityextractionagent`      | Extraction service            |
+| `http://api.localhost:8080/ameya/analytics/v1`         | Analytics API                 |
+| `http://plugin.localhost:8080`                         | Training / schema-builder UI  |
+| `http://minio.localhost:8080`                          | MinIO S3 API                  |
+| `http://mongoui.localhost:8080`                        | Mongo Express (DB UI)         |
+| `http://dynamoadmin.localhost:8080`                    | DynamoDB Admin UI             |
 
 The browser must resolve `*.localhost` to `127.0.0.1`. Chrome and Firefox do
 this automatically; **Safari does not** — see [Host resolution](#host-resolution).
 
+### Services
+
+- **Application** — `ameya-web-service` (frontend), `ameya-authentication-service`,
+  `ameya-authorization-service` (gRPC), `ameya-backend-service`,
+  `ameya-celery-worker`.
+- **Extraction** — `extraction-service`, `extraction-celery-worker`,
+  `extraction-rabbitmq`, `training_plugin`.
+- **Analytics** — `analytics-api`, `analytics-celery-beat`,
+  `analytics-celery-worker`, `analytics-mongo-server`, `analytics-mongo-consumer`,
+  `analytics-rabbitmq`.
+- **Infrastructure** — `dynamodb` (+ `dynamodb-admin`, `dynamodb-init`),
+  `mongodb` (+ `mongo-express`), `minio`, `ameya-redis`, `ameya-rabbitmq`,
+  `caddy`.
+
 ## Prerequisites
 
 - **Docker** and **Docker Compose v2** (`docker compose`, not `docker-compose`).
-- LLM API key(s) — the extraction service defaults to Google Gemini
-  (`gemini-2.5-flash`), so a `GEMINI_API_KEY` is required for extraction to work.
+- LLM API key(s):
+  - `GEMINI_API_KEY` — the extraction service defaults to Google Gemini
+    (`gemini-2.5-flash`), so this is required for extraction.
+  - `OPENAI_API_KEY` — the analytics subsystem uses OpenAI embeddings
+    (`text-embedding-3-small`), so this is required for analytics.
 - License credentials for DPOD (`LICENSE_TOKEN`, `LICENSE_PUBLIC_KEY`,
   `ROOT_USER_TOKEN`).
+
+> The `dpod-labs-private-limited` images are published on a **public** GHCR
+> registry — no `docker login` is needed to pull them.
 
 ## Deployment
 
@@ -43,19 +65,19 @@ Copy the example env file and fill in real values:
 cp .env.example .env
 ```
 
-Edit `.env` and set:
+Set the following in `.env`:
 
 | Variable             | Description                                        |
 | -------------------- | -------------------------------------------------- |
 | `LICENSE_TOKEN`      | DPOD license token                                 |
 | `LICENSE_PUBLIC_KEY` | DPOD license public key                            |
 | `ROOT_USER_TOKEN`    | Root/admin user bootstrap token                    |
-| `GEMINI_API_KEY`     | Google Gemini API key (default extraction LLM)     |
-| `OPENAI_API_KEY`     | OpenAI key (only if switching LLM provider)        |
+| `GEMINI_API_KEY`     | Google Gemini API key (extraction LLM)             |
+| `OPENAI_API_KEY`     | OpenAI API key (analytics embeddings)              |
 
-> The compose file reads `.env` automatically. Infrastructure credentials
-> (MinIO, DynamoDB, Mongo, RabbitMQ) are baked into `docker-compose.yaml` with
-> local-development defaults — change them before any non-local use.
+> Infrastructure credentials (MinIO, DynamoDB, Mongo, RabbitMQ) are baked into
+> `docker-compose.yaml` with local-development defaults — change them before any
+> non-local use.
 
 ### 2. Create the external network
 
@@ -74,8 +96,9 @@ docker compose up -d
 
 On first run this pulls all images, then `dynamodb-init` runs once to create
 the DynamoDB table and the MinIO `dpod-aws-s3` bucket. Services start in
-dependency order and wait on healthchecks, so the full stack may take a couple
-of minutes to become ready.
+dependency order and wait on healthchecks — note the backend and analytics API
+have long `start_period`s (5–8 min), so the full stack can take several minutes
+to report healthy.
 
 Watch progress with:
 
@@ -95,7 +118,7 @@ Chrome and Firefox resolve `*.localhost` → `127.0.0.1` automatically (RFC 6761
 **Safari and some other clients do not.** Add these entries to `/etc/hosts`:
 
 ```
-127.0.0.1  auth.localhost api.localhost extraction.localhost plugin.localhost
+127.0.0.1  auth.localhost backend.localhost api.localhost plugin.localhost
 127.0.0.1  minio.localhost mongoui.localhost dynamoadmin.localhost
 ```
 
@@ -106,7 +129,7 @@ Chrome and Firefox resolve `*.localhost` → `127.0.0.1` automatically (RFC 6761
 docker compose logs -f ameya-backend-service
 
 # Restart a single service
-docker compose restart ameya-backend-service
+docker compose restart analytics-api
 
 # Pull updated images and recreate
 docker compose pull && docker compose up -d
@@ -120,25 +143,37 @@ docker compose down -v
 
 ## Configuration notes
 
+- **`api.localhost` path routing** — Extraction and analytics share one host,
+  split by path in the `Caddyfile`: `/entityextractionagent/*` →
+  `extraction-service`, `/ameya/analytics/v1/*` → `analytics-api`. Paths are
+  preserved (no stripping); each upstream mounts under its own prefix.
 - **LLM provider** — Extraction defaults to Google Gemini. To switch providers,
-  change `LLM_MODEL` / `LLM_PROVIDER` in the `x-extraction-env` block of
-  `docker-compose.yaml` and supply the matching API key.
+  change `LLM_MODEL` / `LLM_PROVIDER` in the `x-extraction-env` block and supply
+  the matching API key.
 - **MinIO / presigned URLs** — The backend presigns S3 URLs against
   `http://minio.localhost:8080`. S3 SigV4 signs the Host header, so this host
   must match exactly between the browser and the backend; do not change it
   without updating both `S3_ENDPOINT_URL` and the Caddy route.
-- **CORS** — The SPA calls the API subdomains cross-origin. Caddy adds uniform
-  CORS headers on the API hosts (see `Caddyfile`); no per-service CORS config is
-  needed.
+- **CORS** — The SPA calls the API hosts cross-origin. Caddy adds uniform CORS
+  headers on the API hosts (see `Caddyfile`); no per-service CORS config needed.
 - **Persistent data** — All stateful data lives in named volumes
-  (`mongodb_data`, `dynamodb-data`, `minio-data`, `redis-data`, etc.).
-  `docker compose down` preserves them; `-v` deletes them.
+  (`mongodb_data`, `dynamodb-data`, `minio-data`, `redis-data`, `uploads_data`,
+  etc.). `docker compose down` preserves them; `-v` deletes them.
+- **Changing the `8080` port** — Port `8080` is embedded in the browser-facing
+  URLs throughout the env anchors. To run on another host port, remap only the
+  host side of the Caddy `ports:` (e.g. `"9090:8080"`) and change the
+  `*.localhost:8080` / `localhost:8080` URLs to the new port (leave internal
+  ports like `analytics-pdf-parser:8080` alone). Caddy matches sites by hostname
+  regardless of port, so the `Caddyfile` itself needs no change.
 
 ## Troubleshooting
 
-| Symptom                                   | Likely cause / fix                                                        |
-| ----------------------------------------- | ------------------------------------------------------------------------- |
-| `network ameya_community_network not found`| Run step 2: `docker network create ameya_community_network`.              |
-| SPA loads but API calls fail in Safari    | Add the `*.localhost` entries to `/etc/hosts` (see Host resolution).      |
-| Extraction jobs never complete            | Missing/invalid `GEMINI_API_KEY`; check `docker compose logs extraction-service`. |
-| A service is stuck `unhealthy`            | Inspect its logs; dependents wait on healthchecks and won't start.        |
+| Symptom                                    | Likely cause / fix                                                             |
+| ------------------------------------------ | ------------------------------------------------------------------------------ |
+| `network ameya_community_network not found`| Run step 2: `docker network create ameya_community_network`.                   |
+| `no matching manifest for linux/arm64`     | Images are amd64-only. Run under emulation on Apple Silicon: `DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose up -d`. |
+| SPA loads but API calls fail in Safari     | Add the `*.localhost` entries to `/etc/hosts` (see Host resolution).           |
+| Extraction jobs never complete             | Missing/invalid `GEMINI_API_KEY`; check `docker compose logs extraction-service`. |
+| Analytics endpoints error out              | Missing/invalid `OPENAI_API_KEY`, or `analytics-api` still warming up (long start_period). |
+| Chatbot replies *"I encountered an issue while processing your request. Please try again."* | `GEMINI_API_KEY` is invalid or its usage/quota limit is exhausted. Verify the key and check your Gemini quota; then `docker compose restart` the affected service. |
+| A service is stuck `unhealthy`             | Inspect its logs; dependents wait on healthchecks and won't start.             |
