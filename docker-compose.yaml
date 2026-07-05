@@ -52,7 +52,6 @@ x-analytics-env: &analytics-env
   MONGODB_USER_DB: user-master
   MONGODB_MONGO_INDEX_DB: index-master
   MONGODB_PDF_INDEX_DB: ameya-analytics-pdf
-  PDF_PARSER_HOST_URL: "http://analytics-pdf-parser:8080"
   RABBITMQ_HOST: "analytics-rabbitmq"
   RABBITMQ_PORT: 5672
   CELERY_BROKER_URL: redis://ameya-redis:6379/0
