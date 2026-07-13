@@ -20,6 +20,7 @@ are separated by **path**:
 | `http://api.localhost:8080/entityextractionagent`      | Extraction service            |
 | `http://api.localhost:8080/ameya/analytics/v1`         | Analytics API                 |
 | `http://plugin.localhost:8080`                         | Training / schema-builder UI  |
+| `http://monitoring.localhost:8080`                     | Monitoring service            |
 | `http://minio.localhost:8080`                          | MinIO S3 API                  |
 | `http://mongoui.localhost:8080`                        | Mongo Express (DB UI)         |
 | `http://dynamoadmin.localhost:8080`                    | DynamoDB Admin UI             |
@@ -35,8 +36,13 @@ this automatically; **Safari does not** — see [Host resolution](#host-resoluti
 - **Extraction** — `extraction-service`, `extraction-celery-worker`,
   `extraction-rabbitmq`, `training_plugin`.
 - **Analytics** — `analytics-api`, `analytics-celery-beat`,
-  `analytics-celery-worker`, `analytics-mongo-server`, `analytics-mongo-consumer`,
-  `analytics-rabbitmq`.
+  `analytics-celery-worker`, `analytics-rabbitmq`, `analytics-mongo-server`,
+  `analytics-mongo-consumer`, `analytics-excel-server`, `analytics-excel-consumer`,
+  `analytics-file-server`, `analytics-file-consumer`.
+- **Parser** — PDF/document parsing: `parser-api`, `parser-consumer`,
+  `parser-rabbitmq`.
+- **Monitoring** — `monitoring-service`, `minio-monitor`, and the one-shot
+  `minio-bootstrap` job that wires MinIO bucket events to the monitor.
 - **Infrastructure** — `dynamodb` (+ `dynamodb-admin`, `dynamodb-init`),
   `mongodb` (+ `mongo-express`), `minio`, `ameya-redis`, `ameya-rabbitmq`,
   `caddy`.
@@ -94,11 +100,22 @@ docker network create ameya_community_network
 docker compose up -d
 ```
 
-On first run this pulls all images, then `dynamodb-init` runs once to create
-the DynamoDB table and the MinIO `dpod-aws-s3` bucket. Services start in
-dependency order and wait on healthchecks — note the backend and analytics API
-have long `start_period`s (5–8 min), so the full stack can take several minutes
-to report healthy.
+On first run this pulls all images, then two one-shot jobs run: `dynamodb-init`
+creates the DynamoDB table and the MinIO `dpod-aws-s3` bucket, and
+`minio-bootstrap` registers the MinIO webhook and wires bucket events to the
+monitoring service. Services start in dependency order and wait on healthchecks
+— note the backend (`start_period` 5 min) and analytics API (`start_period`
+~8 min) warm up slowly, so the full stack can take several minutes to report
+healthy.
+
+The parser subsystem (`parser-api`, `parser-consumer`, `parser-rabbitmq`) is
+**opt-in** — it's memory-heavy (loads OCR models) and gated behind the `parser`
+Compose profile, so a plain `up` skips it. Enable it only if you need PDF/document
+parsing for analytics:
+
+```bash
+docker compose --profile parser up -d
+```
 
 Watch progress with:
 
@@ -134,6 +151,12 @@ docker compose restart analytics-api
 # Pull updated images and recreate
 docker compose pull && docker compose up -d
 
+# Start including the opt-in parser subsystem
+docker compose --profile parser up -d
+
+# Stop just the parser subsystem (frees memory) without touching the rest
+docker compose stop parser-api parser-consumer parser-rabbitmq
+
 # Stop the stack (keeps volumes/data)
 docker compose down
 
@@ -150,6 +173,25 @@ docker compose down -v
 - **LLM provider** — Extraction defaults to Google Gemini. To switch providers,
   change `LLM_MODEL` / `LLM_PROVIDER` in the `x-extraction-env` block and supply
   the matching API key.
+- **Parser subsystem** *(opt-in)* — `parser-api`, `parser-consumer`, and
+  `parser-rabbitmq` carry `profiles: ["parser"]`, so a plain `docker compose up`
+  does **not** start them (they load heavy OCR models). Bring them up with
+  `docker compose --profile parser up -d`. Nothing else depends on them at
+  startup; the only coupling is the runtime `PDF_PARSER_HOST_URL`
+  (`http://parser-api:9090`) that analytics calls to parse PDFs — so with the
+  profile off, PDF-parsing analytics flows won't work, but everything else does.
+- **Parser OCR engines** *(optional)* — When the parser subsystem is enabled it
+  can load different OCR/parsing backends, toggled via env in the `x-parser-env`
+  block. Defaults load Marker only; set as needed:
+
+  | Variable       | Default   | Engine                  |
+  | -------------- | --------- | ----------------------- |
+  | `LOAD_MARKER`  | `"True"`  | Marker (PDF → markdown) |
+  | `LOAD_EASYOCR` | `"False"` | EasyOCR                 |
+  | `LOAD_PADDLE`  | `"False"` | PaddleOCR               |
+
+  Enabling more engines increases the parser image's memory/startup cost, so
+  turn on only what you need.
 - **MinIO / presigned URLs** — The backend presigns S3 URLs against
   `http://minio.localhost:8080`. S3 SigV4 signs the Host header, so this host
   must match exactly between the browser and the backend; do not change it
@@ -163,7 +205,7 @@ docker compose down -v
   URLs throughout the env anchors. To run on another host port, remap only the
   host side of the Caddy `ports:` (e.g. `"9090:8080"`) and change the
   `*.localhost:8080` / `localhost:8080` URLs to the new port (leave internal
-  ports like `analytics-pdf-parser:8080` alone). Caddy matches sites by hostname
+  ports like `parser-api:9090` alone). Caddy matches sites by hostname
   regardless of port, so the `Caddyfile` itself needs no change.
 
 ## Troubleshooting

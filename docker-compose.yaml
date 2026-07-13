@@ -1,7 +1,3 @@
-x-extra-hosts: &extra-hosts
-  - "minio.localhost:host-gateway"
-  - "extraction.localhost:host-gateway"
-
 x-common-env: &common-env
   LICENSE_TOKEN: ${LICENSE_TOKEN}
   LICENSE_PUBLIC_KEY: ${LICENSE_PUBLIC_KEY}
@@ -16,7 +12,6 @@ x-common-env: &common-env
   APPFLYTE_ANALYTICS_CHATBOT_PLUGIN_URL: "https://dev-test-appflyte-analytics-chatbot.ameya.ai"
   MONITOR_SERVICE_URL: "http://monitoring.localhost:8080"
   MONGO_DB_DATABASE: extraction-analytics
-  # MINIO_ENDPOINT: http://minio.localhost:8080
   MINIO_ACCESS_KEY: "admin"
   MINIO_SECRET_KEY: "admin123"
   APPFLYTE_AUTHORIZATION_URL: "ameya-authorization-service:50052"
@@ -400,7 +395,6 @@ services:
       <<: [*extraction-env, *common-env]
       APP_MODE: worker
     volumes:
-      - ./logs:/app/logs
       - uploads_data:/app/shared/uploads
       - parsed_docs:/app/shared/parsed
       - extraction_output:/app/shared/extracted
@@ -717,6 +711,10 @@ services:
   parser-api:
     image: ghcr.io/dpod-labs-private-limited/parser-service-api:v1.1.0
     container_name: parser-api
+    # Memory-heavy (loads Marker OCR models). Gated behind the "parser" profile —
+    # not started by a plain `docker compose up`. Enable with:
+    #   docker compose --profile parser up -d
+    profiles: ["parser"]
     expose:
       - 9090
     environment:
@@ -740,6 +738,7 @@ services:
   parser-rabbitmq:
     image: "rabbitmq:3.12.1-management"
     container_name: parser-rabbitmq
+    profiles: ["parser"]
     networks:
       - ameya_community_network 
     expose:
@@ -758,9 +757,14 @@ services:
   parser-consumer:
     image: ghcr.io/dpod-labs-private-limited/parser-service-consumer:v1.1.0
     container_name: parser-consumer
-    shm_size: 1g 
+    profiles: ["parser"]
+    shm_size: 1g
     environment:
       <<: [*parser-env, *common-env]
+    # Persist the Marker/Surya OCR models (~2 GB) across restarts so they aren't
+    # re-downloaded every start. Mounted at $HOME/.cache (owner nonroot/65532);
+    volumes:
+      - parser-models:/home/nonroot/.cache
     depends_on:
       parser-api:
         condition: service_healthy
@@ -784,6 +788,7 @@ volumes:
   caddy-data:
   caddy-config:
   excel-data:
+  parser-models:
 
 # ── Networks ──────────────────────────────────────────────────────────────────
 
