@@ -1,3 +1,7 @@
+x-extra-hosts: &extra-hosts
+  - "minio.localhost:host-gateway"
+  - "extraction.localhost:host-gateway"
+
 x-common-env: &common-env
   LICENSE_TOKEN: ${LICENSE_TOKEN}
   LICENSE_PUBLIC_KEY: ${LICENSE_PUBLIC_KEY}
@@ -10,11 +14,13 @@ x-common-env: &common-env
   ANALYTICS_SERVICE_URL:  http://api.localhost:8080/ameya/analytics/v1
   ANALYTICS_CHATBOT_PLUGIN_URL: "https://dev-test-ameya-analytics-chatbot.ameya.ai"
   APPFLYTE_ANALYTICS_CHATBOT_PLUGIN_URL: "https://dev-test-appflyte-analytics-chatbot.ameya.ai"
+  MONITOR_SERVICE_URL: "http://monitoring.localhost:8080"
   MONGO_DB_DATABASE: extraction-analytics
-  MINIO_ENDPOINT: http://minio.localhost:8080
+  # MINIO_ENDPOINT: http://minio.localhost:8080
   MINIO_ACCESS_KEY: "admin"
   MINIO_SECRET_KEY: "admin123"
   APPFLYTE_AUTHORIZATION_URL: "ameya-authorization-service:50052"
+  APPFLYTE_BACKEND_URL: http://ameya-backend-service:8000
   LOCAL_TESTING_ENABLED: "true"
   REDIS_HOST: ameya-redis
   REDIS_PORT: "6379"
@@ -23,7 +29,6 @@ x-common-env: &common-env
 x-ameya-env: &ameya-env
   EXTERNAL_APPFLYTE_AUTHENTICATION_URL: "https://auth-dev.appflyte.net"
   APPFLYTE_AUTHENTICATION_URL: http://ameya-authentication-service:5000
-  APPFLYTE_BACKEND_URL: http://ameya-backend-service:8000
   APPFLYTE_SCHEMA_ID: "ameya_appflyte"
   S3_ENDPOINT_URL: http://minio.localhost:8080
   DYNAMODB_ACCESS_KEY: "admin"
@@ -34,6 +39,8 @@ x-ameya-env: &ameya-env
   CELERY_RESULT_BACKEND: redis://ameya-redis:6379/0
   RABBIT_HOST: ameya-rabbitmq
   RABBIT_PORT: "5672"
+  MINIO_ENDPOINT: http://minio.localhost:8080
+
 
 x-web-env: &web-env
   APPFLYTE_AUTHENTICATION_URL: http://auth.localhost:8080
@@ -47,6 +54,8 @@ x-extraction-env: &extraction-env
   CELERY_BROKER_URL: pyamqp://guest@extraction-rabbitmq//
   LLM_MODEL: gemini-2.5-flash
   LLM_PROVIDER: google
+  MINIO_ENDPOINT: http://minio.localhost:8080
+
 
 x-analytics-env: &analytics-env
   MONGODB_USER_DB: user-master
@@ -56,9 +65,12 @@ x-analytics-env: &analytics-env
   RABBITMQ_PORT: 5672
   CELERY_BROKER_URL: redis://ameya-redis:6379/0
   CELERY_RESULT_BACKEND: redis://ameya-redis:6379/1
+  PDF_PARSER_HOST_URL: 'http://parser-api:9090' 
+  INTERNAL_API_KEY: "4ec5248b-f0c5-4372-83e8-770f17917edd"
   ENGINE: "ameya-analytics"
+  MINIO_ENDPOINT: http://minio:9000
 
-x-consumer-env: &consumer-env
+x-mongo-env: &mongo-env
   MONGO_USER_DB: user-master
   MONGO_INDEX_DB: index-master
   MONGO_SESSION_DB: session-master
@@ -69,6 +81,22 @@ x-consumer-env: &consumer-env
   SYSTEM_IDENTITY_PATH: src/config/system_identity.json
   SKILLS_DIR: src/config/20260330_163909/skills
 
+x-excel-env: &excel-env
+  EXCEL_MCP_SERVER_URL: "http://analytics-excel-server:9011"
+  PROJECT_NAME: "excel_analytics"
+  SYSTEM_IDENTITY_PATH: "excel_mcp/config/system_identity.json"
+
+x-monitoring-env: &monitoring-env
+  REDIS_URL: "redis://ameya-redis:6379/0"
+  GEMINI_MODEL: "gemini-2.5-flash"
+  AUTHORIZATION_SERVICE_URL: "ameya-authorization-service:50052"
+  ANALYTICS_API_BASE_URL: http://analytics-api:8087/ameya/analytics
+  SCHEMA_ID: ameya_appflyte
+
+x-parser-env: &parser-env
+  RABBITMQ_URL: amqp://guest:guest@parser-rabbitmq:5672/
+  REDIS_URL: redis://default:12345678@ameya-redis:6379
+  LOGGER_LEVEL: debug
 
 services:
   # DPOD auth-server (authentication)
@@ -145,9 +173,7 @@ services:
   ameya-celery-worker:
     image: ghcr.io/dpod-labs-private-limited/ameya-celery:v1.1.0  
     container_name: ameya-celery-worker
-    extra_hosts:
-      - "minio.localhost:host-gateway"
-      - "extraction.localhost:host-gateway"
+    extra_hosts: *extra-hosts
     environment:
       <<: [*ameya-env, *common-env]
     depends_on:
@@ -323,7 +349,7 @@ services:
 
   # Extraction Service API
   extraction-service:
-    image: ghcr.io/dpod-labs-private-limited/extraction-service:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/extraction-service:v1.1.1
     container_name: extraction-service
     extra_hosts:
       - "minio.localhost:host-gateway"
@@ -365,7 +391,7 @@ services:
     restart: always
   # Extraction Celery Worker
   extraction-celery-worker:
-    image: ghcr.io/dpod-labs-private-limited/extraction-service:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/extraction-service:v1.1.1
     container_name: extraction-celery
     extra_hosts:
       - "minio.localhost:host-gateway"
@@ -467,7 +493,7 @@ services:
     expose:
       - 9010
     environment:
-      <<: [*consumer-env, *common-env]
+      <<: [*mongo-env, *common-env]
     healthcheck:
       # TCP liveness: app is up and listening on 9010. (Image has python, no shell.)
       test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',9010),3).close()"]
@@ -486,7 +512,7 @@ services:
     image: ghcr.io/dpod-labs-private-limited/mongo-consumer:v1.1.0
     container_name: analytics-mongo-consumer
     environment:
-      <<: [*consumer-env, *common-env]
+      <<: [*mongo-env, *common-env]
     depends_on:
       analytics-api:
         condition: service_healthy
@@ -495,6 +521,154 @@ services:
     networks:
       - ameya_community_network  
     restart: always
+# Analytics excel-server
+  analytics-excel-server:
+    image: ghcr.io/dpod-labs-private-limited/excel-server:v1.1.0
+    container_name: analytics-excel-server
+    expose:
+      - 9011
+    environment:
+      <<: [*analytics-env, *common-env, *excel-env]
+    volumes:
+      - excel-data:/app/data
+    healthcheck:
+      # TCP liveness: app is up and listening on 9011. (Image has python, no shell.)
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',9011),3).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    depends_on:
+      analytics-api:
+        condition: service_healthy
+    networks:
+      - ameya_community_network
+    restart: always
+  # Analytics excel-consumer
+  analytics-excel-consumer:
+    image: ghcr.io/dpod-labs-private-limited/excel-consumer:v1.1.0
+    container_name: analytics-excel-consumer
+    environment:
+      <<: [*analytics-env, *common-env, *excel-env]
+    volumes:
+      - excel-data:/app/data
+    depends_on:
+      analytics-excel-server:
+        condition: service_healthy
+    networks:
+      - ameya_community_network
+    restart: always
+
+# File mcp consumer
+  analytics-file-consumer:
+    image: ghcr.io/dpod-labs-private-limited/file-consumer:v1.1.0
+    container_name: analytics-file-consumer
+    environment:
+      <<: [*analytics-env, *common-env]
+      FILE_MCP_SERVER_URL: "http://analytics-file-server:9009"
+    depends_on:
+      analytics-file-server:
+        condition: service_healthy
+    networks:
+      - ameya_community_network
+    restart: always
+  #file mcp server
+  analytics-file-server:
+    image: ghcr.io/dpod-labs-private-limited/file-server:v1.1.0
+    container_name: analytics-file-server
+    expose:
+      - 9009
+    environment:
+      <<: [*analytics-env, *common-env]
+      FILE_MCP_SERVER_URL: "http://analytics-file-server:9009"
+    healthcheck:
+      # TCP liveness: app is up and listening on 9009. (Image has python, no shell.)
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',9009),3).close()"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    depends_on:
+      analytics-api:
+        condition: service_healthy
+    networks:
+      - ameya_community_network
+    restart: always
+    # monitoring-service
+  monitoring-service:
+    image: ghcr.io/dpod-labs-private-limited/monitoring-service:v1.1.0
+    container_name: monitoring-service
+    expose:
+      - 9056
+    environment:
+      <<: [*common-env, *analytics-env, *monitoring-env]
+    healthcheck:
+      # TCP liveness: backend up and listening on 9056. (Image has python, no shell.)
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',9056),3).close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      analytics-excel-server:
+        condition: service_healthy
+      analytics-file-server:
+        condition: service_healthy
+    restart: always
+    networks:
+      - ameya_community_network
+  # minio-monitor
+  minio-monitor:
+    image: ghcr.io/dpod-labs-private-limited/minio-monitor:v1.1.0
+    container_name: minio-monitor
+    expose:
+      - 9070
+    environment:
+      <<: [*common-env, *analytics-env, *monitoring-env]
+    healthcheck:
+      # TCP liveness: monitor up and listen`ing on 9070. (Image has python, no shell.)
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',9070),3).close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    depends_on:
+      minio:
+        condition: service_healthy
+    restart: always
+    networks:
+      - ameya_community_network
+  # One-shot bootstrap: registers the webhook target on the existing MinIO and
+  # wires the bucket events. Safe to re-run.
+  minio-bootstrap:
+    image: minio/mc:latest
+    container_name: community-minio-bootstrap
+    depends_on:
+      minio-monitor:
+        condition: service_healthy
+    environment:
+      - S3_ENDPOINT_URL=http://minio:9000
+      - S3_BUCKET_NAME=dpod-aws-s3
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=admin123
+      - MINIO_MONITOR_ENDPOINT=http://minio-monitor:9070/minio/events
+      - STORAGE_PATH=monitoring_service/file_analytics/env_data/community/
+    networks:
+      - ameya_community_network
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        mc alias set local $$S3_ENDPOINT_URL $$AWS_ACCESS_KEY_ID $$AWS_SECRET_ACCESS_KEY
+        mc admin config set local notify_webhook:ANALYTICS endpoint="$$MINIO_MONITOR_ENDPOINT" enable=on
+        mc admin service restart local --json || true
+        sleep 5
+        until mc ready local; do sleep 2; done
+        mc mb -p local/$$S3_BUCKET_NAME || true
+        mc event add local/$$S3_BUCKET_NAME arn:minio:sqs::ANALYTICS:webhook --event put,delete --prefix $$STORAGE_PATH || true
+        mc event ls local/$$S3_BUCKET_NAME arn:minio:sqs::ANALYTICS:webhook
+        echo "minio-bootstrap: webhook + bucket events wired successfully for local/$$S3_BUCKET_NAME (prefix $$STORAGE_PATH)"
+    restart: "no"
 
 # Caddy reverse proxy — single origin (http://localhost) for frontend + APIs
   caddy:
@@ -539,6 +713,61 @@ services:
       analytics-api:
         condition: service_healthy
 
+ # parser-service api
+  parser-api:
+    image: ghcr.io/dpod-labs-private-limited/parser-service-api:v1.1.0
+    container_name: parser-api
+    expose:
+      - 9090
+    environment:
+      <<: [*parser-env, *common-env]
+    healthcheck:
+      # TCP liveness: backend up and listening on 9090. (Image has python, no shell.)
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1',9090),3).close()"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    restart: always
+    depends_on:
+      parser-rabbitmq:
+        condition: service_healthy
+      analytics-api:
+        condition: service_healthy
+    networks:
+      - ameya_community_network
+  # parser rabbitmq
+  parser-rabbitmq:
+    image: "rabbitmq:3.12.1-management"
+    container_name: parser-rabbitmq
+    networks:
+      - ameya_community_network 
+    expose:
+      - 5672
+      - 15672
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: always
+  # parser-service consumer
+  parser-consumer:
+    image: ghcr.io/dpod-labs-private-limited/parser-service-consumer:v1.1.0
+    container_name: parser-consumer
+    shm_size: 1g 
+    environment:
+      <<: [*parser-env, *common-env]
+    depends_on:
+      parser-api:
+        condition: service_healthy
+    networks:
+      - ameya_community_network
+    restart: always
+
 # ── Volumes ───────────────────────────────────────────────────────────────────
 
 volumes:
@@ -554,6 +783,7 @@ volumes:
   extracted_layouts:
   caddy-data:
   caddy-config:
+  excel-data:
 
 # ── Networks ──────────────────────────────────────────────────────────────────
 

@@ -96,3 +96,7 @@ http://dynamoadmin.localhost:8080 {
 http://mongoui.localhost:8080 {
 	reverse_proxy mongo-express:8081
 }
+
+http://monitoring.localhost:8080 {
+	reverse_proxy monitoring-service:9056
+}
