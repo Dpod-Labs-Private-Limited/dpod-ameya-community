@@ -168,7 +168,9 @@ services:
   ameya-celery-worker:
     image: ghcr.io/dpod-labs-private-limited/ameya-celery:v1.1.0  
     container_name: ameya-celery-worker
-    extra_hosts: *extra-hosts
+    extra_hosts:
+      - "minio.localhost:host-gateway"
+      - "extraction.localhost:host-gateway"
     environment:
       <<: [*ameya-env, *common-env]
     depends_on:
