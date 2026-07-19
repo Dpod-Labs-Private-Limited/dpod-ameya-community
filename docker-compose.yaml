@@ -521,6 +521,7 @@ services:
   analytics-excel-server:
     image: ghcr.io/dpod-labs-private-limited/excel-server:community-latest
     container_name: analytics-excel-server
+    platform: linux/amd64
     expose:
       - 9011
     environment:
@@ -544,6 +545,7 @@ services:
   analytics-excel-consumer:
     image: ghcr.io/dpod-labs-private-limited/excel-consumer:community-latest
     container_name: analytics-excel-consumer
+    platform: linux/amd64
     environment:
       <<: [*analytics-env, *common-env, *excel-env]
     volumes:
