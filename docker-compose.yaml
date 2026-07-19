@@ -96,7 +96,7 @@ x-parser-env: &parser-env
 services:
   # DPOD auth-server (authentication)
   ameya-authentication-service:
-    image: ghcr.io/dpod-labs-private-limited/ameya-auth:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/ameya-auth:community-latest
     container_name: ameya-authentication-service
     expose:
       - 5000
@@ -122,7 +122,7 @@ services:
 
   # DPOD auth-server (authorization / gRPC)
   ameya-authorization-service:
-    image: ghcr.io/dpod-labs-private-limited/ameya-authz:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/ameya-authz:community-latest
     container_name: ameya-authorization-service
     environment:
       <<: [*ameya-env, *common-env]
@@ -139,7 +139,7 @@ services:
 
   # DPOD backend API
   ameya-backend-service:
-    image: ghcr.io/dpod-labs-private-limited/ameya-backend:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/ameya-backend:community-latest
     container_name: ameya-backend-service
     # Resolve the browser-facing proxy hosts from inside the container too
     # (libc won't query Docker DNS for *.localhost). Routes via the host to Caddy.
@@ -166,7 +166,7 @@ services:
       - ameya_community_network
   # Celery worker
   ameya-celery-worker:
-    image: ghcr.io/dpod-labs-private-limited/ameya-celery:v1.1.0  
+    image: ghcr.io/dpod-labs-private-limited/ameya-celery:community-latest  
     container_name: ameya-celery-worker
     extra_hosts:
       - "minio.localhost:host-gateway"
@@ -229,7 +229,7 @@ services:
   # DynamoDB
   # Bootstrap — runs once: creates the DynamoDB table and the MinIO bucket if they don't exist
   dynamodb-init:
-    image: ghcr.io/dpod-labs-private-limited/community-init:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/community-init:community-latest
     container_name: dynamodb-init
     depends_on:
       dynamodb:
@@ -333,7 +333,7 @@ services:
 
   # Extraction-plugin
   training_plugin:
-    image: ghcr.io/dpod-labs-private-limited/extraction-plugin:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/extraction-plugin:community-latest
     container_name: training_plugin
     extra_hosts:
       - "minio.localhost:host-gateway"
@@ -346,7 +346,7 @@ services:
 
   # Extraction Service API
   extraction-service:
-    image: ghcr.io/dpod-labs-private-limited/extraction-service:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/extraction-service:community-latest
     container_name: extraction-service
     extra_hosts:
       - "minio.localhost:host-gateway"
@@ -388,7 +388,7 @@ services:
     restart: always
   # Extraction Celery Worker
   extraction-celery-worker:
-    image: ghcr.io/dpod-labs-private-limited/extraction-service:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/extraction-service:community-latest
     container_name: extraction-celery
     extra_hosts:
       - "minio.localhost:host-gateway"
@@ -411,7 +411,7 @@ services:
     restart: always
   # analytics service API
   analytics-api:
-    image: ghcr.io/dpod-labs-private-limited/analytics-service-api:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/analytics-service-api:community-latest
     container_name: analytics-api
     environment:
       <<: [*analytics-env, *common-env]
@@ -456,7 +456,7 @@ services:
     restart: always
   # Analytics Celery Beat
   analytics-celery-beat:
-    image: ghcr.io/dpod-labs-private-limited/analytics-service-celery:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/analytics-service-celery:community-latest
     container_name: analytics-celery-beat
     environment:
       APP_MODE: beat
@@ -470,7 +470,7 @@ services:
       - ameya_community_network
   # analytics Celery Worker
   analytics-celery-worker:
-    image: ghcr.io/dpod-labs-private-limited/analytics-service-celery:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/analytics-service-celery:community-latest
     container_name: analytics-celery
     environment:
       APP_MODE: worker
@@ -484,7 +484,7 @@ services:
 
   #Analytics Mongo server
   analytics-mongo-server:
-    image: ghcr.io/dpod-labs-private-limited/mongo-server:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/mongo-server:community-latest
     container_name: analytics-mongo-server
     expose:
       - 9010
@@ -505,7 +505,7 @@ services:
     restart: always
   #Analytics Mongo consumer
   analytics-mongo-consumer:
-    image: ghcr.io/dpod-labs-private-limited/mongo-consumer:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/mongo-consumer:community-latest
     container_name: analytics-mongo-consumer
     environment:
       <<: [*mongo-env, *common-env]
@@ -519,7 +519,7 @@ services:
     restart: always
 # Analytics excel-server
   analytics-excel-server:
-    image: ghcr.io/dpod-labs-private-limited/excel-server:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/excel-server:community-latest
     container_name: analytics-excel-server
     expose:
       - 9011
@@ -542,7 +542,7 @@ services:
     restart: always
   # Analytics excel-consumer
   analytics-excel-consumer:
-    image: ghcr.io/dpod-labs-private-limited/excel-consumer:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/excel-consumer:community-latest
     container_name: analytics-excel-consumer
     environment:
       <<: [*analytics-env, *common-env, *excel-env]
@@ -557,7 +557,7 @@ services:
 
 # File mcp consumer
   analytics-file-consumer:
-    image: ghcr.io/dpod-labs-private-limited/file-consumer:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/file-consumer:community-latest
     container_name: analytics-file-consumer
     environment:
       <<: [*analytics-env, *common-env]
@@ -570,7 +570,7 @@ services:
     restart: always
   #file mcp server
   analytics-file-server:
-    image: ghcr.io/dpod-labs-private-limited/file-server:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/file-server:community-latest
     container_name: analytics-file-server
     expose:
       - 9009
@@ -592,7 +592,7 @@ services:
     restart: always
     # monitoring-service
   monitoring-service:
-    image: ghcr.io/dpod-labs-private-limited/monitoring-service:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/monitoring-service:community-latest
     container_name: monitoring-service
     expose:
       - 9056
@@ -615,7 +615,7 @@ services:
       - ameya_community_network
   # minio-monitor
   minio-monitor:
-    image: ghcr.io/dpod-labs-private-limited/minio-monitor:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/minio-monitor:community-latest
     container_name: minio-monitor
     expose:
       - 9070
@@ -682,7 +682,7 @@ services:
 
   # DPOD ameya-web (frontend)
   ameya-web-service:
-    image: ghcr.io/dpod-labs-private-limited/ameya-frontend:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/ameya-frontend:community-latest
     container_name: ameya-web-service
     expose:
       - 3000
@@ -711,7 +711,7 @@ services:
 
  # parser-service api
   parser-api:
-    image: ghcr.io/dpod-labs-private-limited/parser-service-api:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/parser-service-api:community-latest
     container_name: parser-api
     # Memory-heavy (loads Marker OCR models). Gated behind the "parser" profile —
     # not started by a plain `docker compose up`. Enable with:
@@ -757,7 +757,7 @@ services:
     restart: always
   # parser-service consumer
   parser-consumer:
-    image: ghcr.io/dpod-labs-private-limited/parser-service-consumer:v1.1.0
+    image: ghcr.io/dpod-labs-private-limited/parser-service-consumer:community-latest
     container_name: parser-consumer
     profiles: ["parser"]
     shm_size: 1g
